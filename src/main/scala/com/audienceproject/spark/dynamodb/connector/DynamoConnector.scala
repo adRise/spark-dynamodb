@@ -33,18 +33,20 @@ private[dynamodb] trait DynamoConnector {
 
     @transient private lazy val properties = sys.props
 
-    def getDynamoDB(region: Option[String] = None, roleArn: Option[String] = None, providerClassName: Option[String] = None): DynamoDB = {
-        val client: AmazonDynamoDB = getDynamoDBClient(region, roleArn, providerClassName)
+    def getDynamoDB(region: Option[String] = None, roleArn: Option[String] = None, providerClassName: Option[String] = None,
+                   dynamoDBEndpoint: Option[String]): DynamoDB = {
+        val client: AmazonDynamoDB = getDynamoDBClient(region, roleArn, providerClassName, dynamoDBEndpoint)
         new DynamoDB(client)
     }
 
     private def getDynamoDBClient(region: Option[String] = None,
                                   roleArn: Option[String] = None,
-                                  providerClassName: Option[String]): AmazonDynamoDB = {
+                                  providerClassName: Option[String],
+                                  dynamoDBEndpoint: Option[String]): AmazonDynamoDB = {
         val chosenRegion = region.getOrElse(properties.getOrElse("aws.dynamodb.region", "us-east-1"))
         val credentials = getCredentials(chosenRegion, roleArn, providerClassName)
 
-        properties.get("aws.dynamodb.endpoint").map(endpoint => {
+        dynamoDBEndpoint.map(endpoint => {
             AmazonDynamoDBClientBuilder.standard()
                 .withCredentials(credentials)
                 .withEndpointConfiguration(new EndpointConfiguration(endpoint, chosenRegion))
@@ -59,11 +61,12 @@ private[dynamodb] trait DynamoConnector {
 
     def getDynamoDBAsyncClient(region: Option[String] = None,
                                roleArn: Option[String] = None,
-                               providerClassName: Option[String] = None): AmazonDynamoDBAsync = {
+                               providerClassName: Option[String] = None,
+                               dynamoDBEndpoint: Option[String] = None): AmazonDynamoDBAsync = {
         val chosenRegion = region.getOrElse(properties.getOrElse("aws.dynamodb.region", "us-east-1"))
         val credentials = getCredentials(chosenRegion, roleArn, providerClassName)
 
-        properties.get("aws.dynamodb.endpoint").map(endpoint => {
+        dynamoDBEndpoint.map(endpoint => {
             AmazonDynamoDBAsyncClientBuilder.standard()
                 .withCredentials(credentials)
                 .withEndpointConfiguration(new EndpointConfiguration(endpoint, chosenRegion))
