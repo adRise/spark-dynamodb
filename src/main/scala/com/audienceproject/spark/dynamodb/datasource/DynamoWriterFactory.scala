@@ -38,10 +38,12 @@ class DynamoWriterFactory(connector: TableConnector,
     private val roleArn = parameters.get("rolearn")
     private val providerClassName = parameters.get("providerclassname")
     private val endpoint = parameters.get("endpoint")
+    private val accessKey = parameters.get("accesskey")
+    private val secretKey = parameters.get("secretkey")
 
     override def createWriter(partitionId: Int, taskId: Long): DataWriter[InternalRow] = {
         val columnSchema = new ColumnSchema(connector.keySchema, schema)
-        val client = connector.getDynamoDB(region, roleArn, providerClassName, endpoint)
+        val client = connector.getDynamoDB(region, roleArn, providerClassName, endpoint, accessKey, secretKey)
         if (update) {
             assert(!delete, "Please provide exactly one of 'update' or 'delete' options.")
             new DynamoDataUpdateWriter(columnSchema, connector, client)

@@ -41,11 +41,13 @@ private[dynamodb] class TableConnector(tableName: String, parallelism: Int, para
     private val roleArn = parameters.get("rolearn")
     private val providerClassName = parameters.get("providerclassname")
     private val endpoint = parameters.get("endpoint")
+    private val accessKey = parameters.get("accesskey")
+    private val secretKey = parameters.get("secretkey")
 
     override val filterPushdownEnabled: Boolean = filterPushdown
 
     override val (keySchema, readLimit, writeLimit, itemLimit, totalSegments) = {
-        val table = getDynamoDB(region, roleArn, providerClassName, endpoint).getTable(tableName)
+        val table = getDynamoDB(region, roleArn, providerClassName, endpoint, accessKey, secretKey).getTable(tableName)
         val desc = table.describe()
 
         // Key schema.
@@ -108,7 +110,7 @@ private[dynamodb] class TableConnector(tableName: String, parallelism: Int, para
             scanSpec.withExpressionSpec(xspec.buildForScan())
         }
 
-        getDynamoDB(region, roleArn, providerClassName, endpoint).getTable(tableName).scan(scanSpec)
+        getDynamoDB(region, roleArn, providerClassName, endpoint, accessKey, secretKey).getTable(tableName).scan(scanSpec)
     }
 
     override def putItems(columnSchema: ColumnSchema, items: Seq[InternalRow])
