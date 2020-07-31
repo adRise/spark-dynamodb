@@ -60,16 +60,23 @@ private[dynamodb] class TableConnector(tableName: String, parallelism: Int, para
         val readFactor = if (consistentRead) 1 else 2
 
         // Table parameters.
-        val tableSize = desc.getTableSizeBytes
-        val itemCount = desc.getItemCount
+        val tableSize = Option(desc.getTableSizeBytes)
+        val itemCount = Option(desc.getItemCount)
 
         // Partitioning calculation.
-        val numPartitions = parameters.get("readpartitions").map(_.toInt).getOrElse({
-            val sizeBased = (tableSize / maxPartitionBytes).toInt max 1
-            val remainder = sizeBased % parallelism
-            if (remainder > 0) sizeBased + (parallelism - remainder)
-            else sizeBased
-        })
+        val numPartitions = parameters.get("readpartitions").map(_.toInt).getOrElse {
+          tableSize match {
+            case None =>
+              // Can't choose partitions based on table size, so just go with 32.
+              32
+            case Some(tableSize) =>
+              val sizeBased = (tableSize / maxPartitionBytes).toInt max 1
+              val remainder = sizeBased % parallelism
+
+              if (remainder > 0) sizeBased + (parallelism - remainder)
+              else sizeBased
+          }
+        }
 
         // Provisioned or on-demand throughput.
         val readThroughput = parameters.getOrElse("throughput", Option(desc.getProvisionedThroughput.getReadCapacityUnits)
@@ -80,12 +87,16 @@ private[dynamodb] class TableConnector(tableName: String, parallelism: Int, para
             .getOrElse("100")).toLong
 
         // Rate limit calculation.
-        val avgItemSize = tableSize.toDouble / itemCount
+        val avgItemSize = tableSize.zip(itemCount).headOption.map {
+          case (size, cnt) => size.toDouble / cnt
+        }
         val readCapacity = readThroughput * targetCapacity
         val writeCapacity = writeThroughput * targetCapacity
 
         val readLimit = readCapacity / parallelism
-        val itemLimit = ((bytesPerRCU / avgItemSize * readLimit).toInt * readFactor) max 1
+        val itemLimit = avgItemSize.map { avgItemSize =>
+          ((bytesPerRCU / avgItemSize * readLimit).toInt * readFactor) max 1
+        } getOrElse 25
 
         val writeLimit = writeCapacity / parallelism
 
