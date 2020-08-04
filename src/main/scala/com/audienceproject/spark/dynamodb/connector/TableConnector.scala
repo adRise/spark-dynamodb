@@ -158,6 +158,134 @@ private[dynamodb] class TableConnector(tableName: String, parallelism: Int, para
         handleBatchWriteResponse(client, rateLimiter)(response)
     }
 
+    def putAndDeleteItems(columnSchema: ColumnSchema,
+                          opType: ColumnSchema.Attr,
+                          items: Seq[InternalRow])(
+                             client: DynamoDB, rateLimiter: RateLimiter): Unit = {
+        val (itemsToPut, itemsToDelete) = {
+            val deduped = columnSchema.keys() match {
+                case Right((hashKeyAttr, rangeKeyAttr)) =>
+                    items.foldLeft(Map[(Any, Any), InternalRow]()) { (batch, item) =>
+                        val hashKeyValue = JavaConverter.convertRowValue(
+                            item,
+                            hashKeyAttr._2,
+                            hashKeyAttr._3
+                        )
+                        val rangeKeyValue = JavaConverter.convertRowValue(
+                            item,
+                            rangeKeyAttr._2,
+                            rangeKeyAttr._3
+                        )
+                        batch + ((hashKeyValue, rangeKeyValue) -> item)
+                    }
+
+                case Left(hashKeyAttr) =>
+                    items.foldLeft(Map[Any, InternalRow]()) { (batch, item) =>
+                        val hashKeyValue = JavaConverter.convertRowValue(
+                            item,
+                            hashKeyAttr._2,
+                            hashKeyAttr._3
+                        )
+                        batch + (hashKeyValue -> item)
+                    }
+            }
+
+            deduped.values.partition { row =>
+                row.getBoolean(opType._2)
+            }
+        }
+
+        val tableWriteItems =
+            new TableWriteItems(tableName)
+                .withItemsToPut(
+                    itemsToPut.toList.map { row =>
+                        val item = new Item()
+
+                        // Map primary key.
+                        columnSchema.keys() match {
+                            case Left((hashKey, hashKeyIndex, hashKeyType)) =>
+                                item.withPrimaryKey(
+                                    hashKey,
+                                    JavaConverter
+                                        .convertRowValue(row, hashKeyIndex, hashKeyType)
+                                )
+                            case Right(
+                            (
+                                (hashKey, hashKeyIndex, hashKeyType),
+                                (rangeKey, rangeKeyIndex, rangeKeyType)
+                                )
+                            ) =>
+                                val hashKeyValue =
+                                    JavaConverter
+                                        .convertRowValue(row, hashKeyIndex, hashKeyType)
+                                val rangeKeyValue =
+                                    JavaConverter
+                                        .convertRowValue(row, rangeKeyIndex, rangeKeyType)
+                                item
+                                    .withPrimaryKey(
+                                        hashKey,
+                                        hashKeyValue,
+                                        rangeKey,
+                                        rangeKeyValue
+                                    )
+                        }
+
+                        // Map remaining columns.
+                        columnSchema
+                            .attributes()
+                            .foreach({
+                                case (name, index, dataType) if !row.isNullAt(index) =>
+                                    item.`with`(
+                                        name,
+                                        JavaConverter.convertRowValue(row, index, dataType)
+                                    )
+                                case _ =>
+                            })
+
+                        item
+                    }: _*
+                )
+
+        columnSchema.keys() match {
+            case Left((hashKey, hashKeyIndex, hashKeyType)) =>
+                val hashKeys = itemsToDelete.toList.map(row =>
+                    JavaConverter
+                        .convertRowValue(row, hashKeyIndex, hashKeyType)
+                        .asInstanceOf[AnyRef]
+                )
+                tableWriteItems.withHashOnlyKeysToDelete(hashKey, hashKeys: _*)
+            case Right(
+            (
+                (hashKey, hashKeyIndex, hashKeyType),
+                (rangeKey, rangeKeyIndex, rangeKeyType)
+                )
+            ) =>
+                val alternatingHashAndRangeKeys = itemsToDelete.toList.flatMap { row =>
+                    val hashKeyValue =
+                        JavaConverter.convertRowValue(row, hashKeyIndex, hashKeyType)
+                    val rangeKeyValue =
+                        JavaConverter.convertRowValue(row, rangeKeyIndex, rangeKeyType)
+                    Seq(
+                        hashKeyValue.asInstanceOf[AnyRef],
+                        rangeKeyValue.asInstanceOf[AnyRef]
+                    )
+                }
+
+                tableWriteItems.withHashAndRangeKeysToDelete(
+                    hashKey,
+                    rangeKey,
+                    alternatingHashAndRangeKeys: _*
+                )
+        }
+
+        val response = client.batchWriteItem(
+            new BatchWriteItemSpec()
+                .withReturnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
+                .withTableWriteItems(tableWriteItems)
+        )
+        handleBatchWriteResponse(client, rateLimiter)(response)
+    }
+
     override def updateItem(columnSchema: ColumnSchema, row: InternalRow)
                            (client: DynamoDB, rateLimiter: RateLimiter): Unit = {
         val updateItemSpec = new UpdateItemSpec().withReturnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
