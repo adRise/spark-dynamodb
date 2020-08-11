@@ -20,7 +20,7 @@ libraryDependencies += "org.apache.spark" %% "spark-sql" % "3.0.0" % "provided"
 
 libraryDependencies += "org.scalatest" %% "scalatest" % "3.0.5" % "test"
 
-libraryDependencies += "org.slf4j" % "slf4j-api" % "1.7.25"
+libraryDependencies += "org.slf4j" % "slf4j-api" % "1.7.25" % "provided"
 
 libraryDependencies ++= {
     val log4j2Version = "2.11.1"
