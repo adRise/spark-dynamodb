@@ -58,9 +58,7 @@ class DynamoReaderFactory(connector: DynamoConnector,
         private var currentRow: InternalRow = _
         private var proceed = false
 
-        private val typeConversions = schema.collect({
-            case StructField(name, dataType, _, _) => name -> TypeConversion(name, dataType)
-        }).toMap
+        private lazy val typeConverter = TypeConverter.fromStructType(schema)
 
         override def next(): Boolean = {
             proceed = true
@@ -87,11 +85,11 @@ class DynamoReaderFactory(connector: DynamoConnector,
             val page = pageIterator.next()
             val result = page.getLowLevelResult
             Option(result.getScanResult.getConsumedCapacity).foreach(cap => rateLimiter.acquire(cap.getCapacityUnits.toInt max 1))
-            innerIterator = result.getItems.iterator().asScala.map(itemToRow(requiredColumns))
+            innerIterator = result.getItems.iterator().asScala.map(itemToRow)
         }
 
-        private def itemToRow(requiredColumns: Seq[String])(item: Item): InternalRow =
-            if (requiredColumns.nonEmpty) InternalRow.fromSeq(requiredColumns.map(columnName => typeConversions(columnName)(item)))
+        private def itemToRow(item: Item): InternalRow =
+            if (schema.nonEmpty) typeConverter.readInternalRow(item)
             else InternalRow.fromSeq(item.asMap().asScala.values.toSeq.map(_.toString))
 
     }

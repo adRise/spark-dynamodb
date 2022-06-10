@@ -12,15 +12,15 @@ compileOrder := CompileOrder.JavaThenScala
 
 resolvers += "DynamoDBLocal" at "https://s3-us-west-2.amazonaws.com/dynamodb-local/release"
 
-libraryDependencies += "com.amazonaws" % "aws-java-sdk-sts" % "1.11.678"
-libraryDependencies += "com.amazonaws" % "aws-java-sdk-dynamodb" % "1.11.678"
+libraryDependencies += "com.amazonaws" % "aws-java-sdk-sts" % "1.11.728" % "provided"
+libraryDependencies += "com.amazonaws" % "aws-java-sdk-dynamodb" % "1.11.728" % "provided"
 libraryDependencies += "com.amazonaws" % "DynamoDBLocal" % "[1.11,2.0)" % "test" exclude("com.google.guava", "guava")
 
-libraryDependencies += "org.apache.spark" %% "spark-sql" % "3.0.0" % "provided"
+libraryDependencies += "org.apache.spark" %% "spark-sql" % "3.1.1" % "provided"
 
 libraryDependencies += "org.scalatest" %% "scalatest" % "3.0.5" % "test"
 
-libraryDependencies += "org.slf4j" % "slf4j-api" % "1.7.25"
+libraryDependencies += "org.slf4j" % "slf4j-api" % "1.7.25" % "provided"
 
 libraryDependencies ++= {
     val log4j2Version = "2.11.1"
@@ -133,3 +133,4 @@ pomExtra := <url>https://github.com/audienceproject/spark-dynamodb</url>
             <organizationUrl>https://www.audienceproject.com</organizationUrl>
         </developer>
     </developers>
+assembly / test := {}

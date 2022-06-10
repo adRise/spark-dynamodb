@@ -20,12 +20,19 @@
   */
 package com.audienceproject.spark.dynamodb.connector
 
-import org.apache.spark.sql.types.{DataType, StructType}
+import org.apache.spark.sql.types.{DataType, DataTypes, StructField, StructType}
+
+object ColumnSchema {
+    val OperationTypeColumn = "_dynamo_op_type"
+    val DeleteOperation = false
+    val PutOperation = true
+
+    type Attr = (String, Int, DataType)
+}
 
 private[dynamodb] class ColumnSchema(keySchema: KeySchema,
                                      sparkSchema: StructType) {
-
-    type Attr = (String, Int, DataType)
+    import ColumnSchema.Attr
 
     private val columnNames = sparkSchema.map(_.name)
 
@@ -43,10 +50,14 @@ private[dynamodb] class ColumnSchema(keySchema: KeySchema,
     }
 
     private val attributeIndices = columnNames.zipWithIndex.filterNot({
-        case (name, _) => keySchema match {
-            case KeySchema(hashKey, None) => name == hashKey
-            case KeySchema(hashKey, Some(rangeKey)) => name == hashKey || name == rangeKey
-        }
+        case (name, _) =>
+            val isKey = keySchema match {
+                case KeySchema(hashKey, None) => name == hashKey
+                case KeySchema(hashKey, Some(rangeKey)) => name == hashKey || name == rangeKey
+            }
+            val isOpType = name == ColumnSchema.OperationTypeColumn
+
+            isKey || isOpType
     }).map({
         case (name, index) => (name, index, sparkSchema(name).dataType)
     })
@@ -55,4 +66,10 @@ private[dynamodb] class ColumnSchema(keySchema: KeySchema,
 
     def attributes(): Seq[Attr] = attributeIndices
 
+    def opType: Option[Attr] =
+        sparkSchema.zipWithIndex.collectFirst {
+            case (StructField( ColumnSchema.OperationTypeColumn, DataTypes.BooleanType, _, _ ),
+                  idx) =>
+                (ColumnSchema.OperationTypeColumn, idx, DataTypes.BooleanType)
+        }
 }

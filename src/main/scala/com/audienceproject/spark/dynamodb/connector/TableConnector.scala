@@ -40,11 +40,14 @@ private[dynamodb] class TableConnector(tableName: String, parallelism: Int, para
     private val region = parameters.get("region")
     private val roleArn = parameters.get("rolearn")
     private val providerClassName = parameters.get("providerclassname")
+    private val endpoint = parameters.get("endpoint")
+    private val accessKey = parameters.get("accesskey")
+    private val secretKey = parameters.get("secretkey")
 
     override val filterPushdownEnabled: Boolean = filterPushdown
 
     override val (keySchema, readLimit, writeLimit, itemLimit, totalSegments) = {
-        val table = getDynamoDB(region, roleArn, providerClassName).getTable(tableName)
+        val table = getDynamoDB(region, roleArn, providerClassName, endpoint, accessKey, secretKey).getTable(tableName)
         val desc = table.describe()
 
         // Key schema.
@@ -57,16 +60,23 @@ private[dynamodb] class TableConnector(tableName: String, parallelism: Int, para
         val readFactor = if (consistentRead) 1 else 2
 
         // Table parameters.
-        val tableSize = desc.getTableSizeBytes
-        val itemCount = desc.getItemCount
+        val tableSize = Option(desc.getTableSizeBytes)
+        val itemCount = Option(desc.getItemCount)
 
         // Partitioning calculation.
-        val numPartitions = parameters.get("readpartitions").map(_.toInt).getOrElse({
-            val sizeBased = (tableSize / maxPartitionBytes).toInt max 1
-            val remainder = sizeBased % parallelism
-            if (remainder > 0) sizeBased + (parallelism - remainder)
-            else sizeBased
-        })
+        val numPartitions = parameters.get("readpartitions").map(_.toInt).getOrElse {
+          tableSize match {
+            case None =>
+              // Can't choose partitions based on table size, so just go with 32.
+              32
+            case Some(tableSize) =>
+              val sizeBased = (tableSize / maxPartitionBytes).toInt max 1
+              val remainder = sizeBased % parallelism
+
+              if (remainder > 0) sizeBased + (parallelism - remainder)
+              else sizeBased
+          }
+        }
 
         // Provisioned or on-demand throughput.
         val readThroughput = parameters.getOrElse("throughput", Option(desc.getProvisionedThroughput.getReadCapacityUnits)
@@ -77,12 +87,16 @@ private[dynamodb] class TableConnector(tableName: String, parallelism: Int, para
             .getOrElse("100")).toLong
 
         // Rate limit calculation.
-        val avgItemSize = tableSize.toDouble / itemCount
+        val avgItemSize = tableSize.zip(itemCount).headOption.map {
+          case (size, cnt) => size.toDouble / cnt
+        }
         val readCapacity = readThroughput * targetCapacity
         val writeCapacity = writeThroughput * targetCapacity
 
         val readLimit = readCapacity / parallelism
-        val itemLimit = ((bytesPerRCU / avgItemSize * readLimit).toInt * readFactor) max 1
+        val itemLimit = avgItemSize.map { avgItemSize =>
+          ((bytesPerRCU / avgItemSize * readLimit).toInt * readFactor) max 1
+        } getOrElse 25
 
         val writeLimit = writeCapacity / parallelism
 
@@ -107,7 +121,7 @@ private[dynamodb] class TableConnector(tableName: String, parallelism: Int, para
             scanSpec.withExpressionSpec(xspec.buildForScan())
         }
 
-        getDynamoDB(region, roleArn, providerClassName).getTable(tableName).scan(scanSpec)
+        getDynamoDB(region, roleArn, providerClassName, endpoint, accessKey, secretKey).getTable(tableName).scan(scanSpec)
     }
 
     override def putItems(columnSchema: ColumnSchema, items: Seq[InternalRow])
@@ -141,6 +155,134 @@ private[dynamodb] class TableConnector(tableName: String, parallelism: Int, para
         ))
 
         val response = client.batchWriteItem(batchWriteItemSpec)
+        handleBatchWriteResponse(client, rateLimiter)(response)
+    }
+
+    def putAndDeleteItems(columnSchema: ColumnSchema,
+                          opType: ColumnSchema.Attr,
+                          items: Seq[InternalRow])(
+                             client: DynamoDB, rateLimiter: RateLimiter): Unit = {
+        val (itemsToPut, itemsToDelete) = {
+            val deduped = columnSchema.keys() match {
+                case Right((hashKeyAttr, rangeKeyAttr)) =>
+                    items.foldLeft(Map[(Any, Any), InternalRow]()) { (batch, item) =>
+                        val hashKeyValue = JavaConverter.convertRowValue(
+                            item,
+                            hashKeyAttr._2,
+                            hashKeyAttr._3
+                        )
+                        val rangeKeyValue = JavaConverter.convertRowValue(
+                            item,
+                            rangeKeyAttr._2,
+                            rangeKeyAttr._3
+                        )
+                        batch + ((hashKeyValue, rangeKeyValue) -> item)
+                    }
+
+                case Left(hashKeyAttr) =>
+                    items.foldLeft(Map[Any, InternalRow]()) { (batch, item) =>
+                        val hashKeyValue = JavaConverter.convertRowValue(
+                            item,
+                            hashKeyAttr._2,
+                            hashKeyAttr._3
+                        )
+                        batch + (hashKeyValue -> item)
+                    }
+            }
+
+            deduped.values.partition { row =>
+                row.getBoolean(opType._2)
+            }
+        }
+
+        val tableWriteItems =
+            new TableWriteItems(tableName)
+                .withItemsToPut(
+                    itemsToPut.toList.map { row =>
+                        val item = new Item()
+
+                        // Map primary key.
+                        columnSchema.keys() match {
+                            case Left((hashKey, hashKeyIndex, hashKeyType)) =>
+                                item.withPrimaryKey(
+                                    hashKey,
+                                    JavaConverter
+                                        .convertRowValue(row, hashKeyIndex, hashKeyType)
+                                )
+                            case Right(
+                            (
+                                (hashKey, hashKeyIndex, hashKeyType),
+                                (rangeKey, rangeKeyIndex, rangeKeyType)
+                                )
+                            ) =>
+                                val hashKeyValue =
+                                    JavaConverter
+                                        .convertRowValue(row, hashKeyIndex, hashKeyType)
+                                val rangeKeyValue =
+                                    JavaConverter
+                                        .convertRowValue(row, rangeKeyIndex, rangeKeyType)
+                                item
+                                    .withPrimaryKey(
+                                        hashKey,
+                                        hashKeyValue,
+                                        rangeKey,
+                                        rangeKeyValue
+                                    )
+                        }
+
+                        // Map remaining columns.
+                        columnSchema
+                            .attributes()
+                            .foreach({
+                                case (name, index, dataType) if !row.isNullAt(index) =>
+                                    item.`with`(
+                                        name,
+                                        JavaConverter.convertRowValue(row, index, dataType)
+                                    )
+                                case _ =>
+                            })
+
+                        item
+                    }: _*
+                )
+
+        columnSchema.keys() match {
+            case Left((hashKey, hashKeyIndex, hashKeyType)) =>
+                val hashKeys = itemsToDelete.toList.map(row =>
+                    JavaConverter
+                        .convertRowValue(row, hashKeyIndex, hashKeyType)
+                        .asInstanceOf[AnyRef]
+                )
+                tableWriteItems.withHashOnlyKeysToDelete(hashKey, hashKeys: _*)
+            case Right(
+            (
+                (hashKey, hashKeyIndex, hashKeyType),
+                (rangeKey, rangeKeyIndex, rangeKeyType)
+                )
+            ) =>
+                val alternatingHashAndRangeKeys = itemsToDelete.toList.flatMap { row =>
+                    val hashKeyValue =
+                        JavaConverter.convertRowValue(row, hashKeyIndex, hashKeyType)
+                    val rangeKeyValue =
+                        JavaConverter.convertRowValue(row, rangeKeyIndex, rangeKeyType)
+                    Seq(
+                        hashKeyValue.asInstanceOf[AnyRef],
+                        rangeKeyValue.asInstanceOf[AnyRef]
+                    )
+                }
+
+                tableWriteItems.withHashAndRangeKeysToDelete(
+                    hashKey,
+                    rangeKey,
+                    alternatingHashAndRangeKeys: _*
+                )
+        }
+
+        val response = client.batchWriteItem(
+            new BatchWriteItemSpec()
+                .withReturnConsumedCapacity(ReturnConsumedCapacity.TOTAL)
+                .withTableWriteItems(tableWriteItems)
+        )
         handleBatchWriteResponse(client, rateLimiter)(response)
     }
 
