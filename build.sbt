@@ -16,7 +16,7 @@ libraryDependencies += "com.amazonaws" % "aws-java-sdk-sts" % "1.11.728" % "prov
 libraryDependencies += "com.amazonaws" % "aws-java-sdk-dynamodb" % "1.11.728" % "provided"
 libraryDependencies += "com.amazonaws" % "DynamoDBLocal" % "[1.11,2.0)" % "test" exclude("com.google.guava", "guava")
 
-libraryDependencies += "org.apache.spark" %% "spark-sql" % "3.1.0" % "provided"
+libraryDependencies += "org.apache.spark" %% "spark-sql" % "3.1.1" % "provided"
 
 libraryDependencies += "org.scalatest" %% "scalatest" % "3.0.5" % "test"
 
