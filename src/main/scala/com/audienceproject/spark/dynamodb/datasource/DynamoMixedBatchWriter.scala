@@ -7,7 +7,7 @@ import com.audienceproject.spark.dynamodb.connector.{
   TableConnector
 }
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.sources.v2.writer.{DataWriter, WriterCommitMessage}
+import org.apache.spark.sql.connector.write.{DataWriter, WriterCommitMessage}
 
 import scala.collection.mutable.ArrayBuffer
 
@@ -37,6 +37,8 @@ class DynamoMixedBatchWriter(
   }
 
   override def abort(): Unit = {}
+
+  override def close(): Unit = {}
 
   protected def flush(): Unit = {
     if (buffer.nonEmpty) {
