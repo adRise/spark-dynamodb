@@ -134,3 +134,4 @@ pomExtra := <url>https://github.com/audienceproject/spark-dynamodb</url>
         </developer>
     </developers>
 assembly / test := {}
+assembly / assemblyOption := (assemblyOption in assembly).value.copy(includeScala = false)
